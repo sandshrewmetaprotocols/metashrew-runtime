@@ -750,6 +750,7 @@ dependencies = [
  "anyhow",
  "bitcoin",
  "itertools",
+ "log",
  "rlp",
  "rocksdb",
  "wasmtime",
