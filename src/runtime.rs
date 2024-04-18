@@ -266,8 +266,8 @@ where
         entry.extend(height);
         return entry;
     }
-    pub fn db_append_annotated(
-        &self,
+    pub fn db_append_annotated<'a>(
+        &'a self,
         batch: &mut rocksdb::WriteBatch,
         key: &Vec<u8>,
         value: &Vec<u8>,
@@ -291,7 +291,7 @@ where
         batch.put(&length_key, &new_length_bits);
     }
 
-    pub fn setup_linker_indexer(&self, linker: &mut Linker<State>, height: usize) {
+    pub fn setup_linker_indexer(&'static self, linker: &mut Linker<State>, height: usize) {
         linker
             .func_wrap(
                 "env",
