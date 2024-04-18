@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use wasmtime::{Caller, Linker, Store, StoreLimits, StoreLimitsBuilder};
 
+type SerBlock = Vec<u8>;
 pub trait BatchLike {
     fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, value: V);
 }
@@ -43,6 +44,8 @@ pub struct MetashrewRuntime<T: KeyValueStoreLike> {
     engine: wasmtime::Engine,
     module: wasmtime::Module,
     wasmstore: Arc<Mutex<wasmtime::Store<State>>>,
+    pub height: Arc<Mutex<u32>>,
+    pub block: Arc<Mutex<SerBlock>>,
 }
 
 impl State {
@@ -66,6 +69,8 @@ where
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::from_file(&engine, indexer.into_os_string()).unwrap();
         let wasmstore = Arc::new(Mutex::new(Store::<State>::new(&engine, State::new())));
+        let height = Arc::new(Mutex::new(0));
+        let block = Arc::new(Mutex::new(vec![]));
         {
             (*wasmstore.lock().unwrap()).limiter(|state| &mut state.limits)
         }
@@ -74,6 +79,8 @@ where
             engine,
             module,
             wasmstore,
+            height,
+            block,
         })
     }
 
@@ -208,7 +215,9 @@ where
         );
     }
 
-    pub fn setup_linker(linker: &mut Linker<State>, input: &Vec<u8>, height: u32) {
+    pub fn setup_linker(&'static self, linker: &mut Linker<State>) {
+        let input = self.block.lock().unwrap();
+        let height = self.height.lock().unwrap();
         let mut input_clone: Vec<u8> =
             <Vec<u8> as TryFrom<[u8; 4]>>::try_from(height.to_le_bytes()).unwrap();
         input_clone.extend(input.clone());
@@ -291,7 +300,8 @@ where
         batch.put(&length_key, &new_length_bits);
     }
 
-    pub fn setup_linker_indexer(&'static self, linker: &mut Linker<State>, height: usize) {
+    pub fn setup_linker_indexer(&'static self, linker: &mut Linker<State>) {
+        let height = *self.height.lock().unwrap();
         linker
             .func_wrap(
                 "env",
