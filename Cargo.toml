@@ -7,9 +7,20 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.81"
-bitcoin = "0.31.2"
+bitcoin = { version = "0.31.0", features = ["serde", "rand-std"] }
+bitcoin_slices = { version = "0.7", features = ["bitcoin", "sha2"] }
+bitcoincore-rpc = { version = "0.18" }
 itertools = "0.12.1"
 rlp = "0.5.2"
-rocksdb = "0.22.0"
+# rocksdb = "0.22.0"
 wasmtime = "19.0.1"
 log = "0.4"
+crossbeam-channel = "0.5"
+rayon = "1.8"
+serde = "1.0"
+serde_derive = "1.0.193"
+serde_json = "1.0"
+tempdir = "0.3.7"
+
+[dependencies.electrs-rocksdb]
+version = "0.19.0-e3"
