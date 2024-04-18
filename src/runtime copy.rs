@@ -19,11 +19,6 @@ pub trait KeyValueStoreLike {
 }
 
 pub struct DBStore(pub DB);
-impl DBStore {
-    pub fn new(db: DB) -> Self {
-        DBStore(db)
-    }
-}
 
 impl KeyValueStoreLike for DBStore {
     type Error = rocksdb::Error;
@@ -57,6 +52,12 @@ pub struct State {
 
 pub struct MetashrewRuntime<T: KeyValueStoreLike + 'static> {
     pub store: &'static T,
+    batch_size: usize,
+    lookup_limit: Option<usize>,
+    // chain: Chain,
+    // stats: Stats,
+    is_ready: bool,
+    flush_needed: bool,
     engine: wasmtime::Engine,
     module: wasmtime::Module,
     wasmstore: Arc<Mutex<wasmtime::Store<State>>>,
@@ -75,7 +76,18 @@ impl State {
 }
 
 impl<T: KeyValueStoreLike + 'static> MetashrewRuntime<T> {
-    pub fn load(indexer: PathBuf, store: &'static T) -> Result<Self> {
+    pub(crate) fn load(
+        indexer: PathBuf,
+        store: &'static T,
+        // mut chain: Chain,
+        // metrics: &Metrics,
+        batch_size: usize,
+        lookup_limit: Option<usize>,
+        reindex_last_blocks: usize,
+    ) -> Result<Self> {
+        // let stats = Stats::new(metrics);
+        // stats.observe_chain(&chain);
+        // stats.observe_db(store);
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::from_file(&engine, indexer.into_os_string()).unwrap();
         let wasmstore = Arc::new(Mutex::new(Store::<State>::new(&engine, State::new())));
@@ -84,16 +96,16 @@ impl<T: KeyValueStoreLike + 'static> MetashrewRuntime<T> {
         }
         Ok(MetashrewRuntime {
             store,
+            batch_size,
+            lookup_limit,
+            // chain,
+            // stats,
+            is_ready: false,
+            flush_needed: false,
             engine,
             module,
             wasmstore,
         })
-    }
-
-    pub fn instantiate(&self) -> Result<wasmtime::Instance> {
-        let mut store = self.wasmstore.lock().unwrap();
-        let linker = Linker::new(&self.engine);
-        linker.instantiate(&mut *store, &self.module)
     }
 }
 
