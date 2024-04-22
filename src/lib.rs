@@ -3,4 +3,4 @@ extern crate log;
 
 pub mod runtime;
 
-pub use runtime::MetashrewRuntime;
+pub use runtime::*;
