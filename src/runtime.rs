@@ -1,10 +1,8 @@
-use anyhow::{Context, Result};
-use bitcoin::consensus::{deserialize, serialize};
-use bitcoin::{BlockHash, OutPoint, Txid};
+use anyhow::{Result};
 use electrs_rocksdb as rocksdb;
+use rocksdb::WriteBatchWithTransaction;
 use itertools::Itertools;
 use rlp;
-use rocksdb::{WriteBatch, WriteBatchWithTransaction, DB};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -32,21 +30,37 @@ impl BatchLike for WriteBatchWithTransaction<false> {
     }
 }
 
-const TIP_KEY: &[u8] = b"T";
-const HEADERS_CF: &str = "headers";
+//const TIP_KEY: &[u8] = b"T";
+//const HEADERS_CF: &str = "headers";
 
 pub struct State {
     limits: StoreLimits,
 }
 
-pub struct MetashrewRuntime<T: KeyValueStoreLike> {
-    pub db: Arc<Mutex<T>>,
-    engine: wasmtime::Engine,
-    module: wasmtime::Module,
-    wasmstore: Arc<Mutex<wasmtime::Store<State>>>,
-    pub height: Arc<Mutex<u32>>,
-    pub block: Arc<Mutex<SerBlock>>,
+pub struct MetashrewRuntimeContext<T: KeyValueStoreLike> {
+  pub db: T,
+  pub height: u32,
+  pub block: SerBlock,
+  pub wasmstore: Store<State>,
 }
+
+impl<T: KeyValueStoreLike> MetashrewRuntimeContext<T> {
+  fn new(db: T, wasmstore: Store<State>, height: u32, block: SerBlock) -> Self {
+    return Self {
+      db: db,
+      height: height,
+      block: block,
+      wasmstore: wasmstore
+    };
+  }
+}
+
+pub struct MetashrewRuntime<T: KeyValueStoreLike + 'static> {
+   pub context: Arc<Mutex<MetashrewRuntimeContext<T>>>,
+   pub engine: wasmtime::Engine,
+   pub module: wasmtime::Module,
+}
+
 
 impl State {
     pub fn new() -> Self {
@@ -65,31 +79,28 @@ where
     T: KeyValueStoreLike<Batch = WriteBatchWithTransaction<false>>,
     T: Sync + Send,
 {
-    pub fn load(indexer: PathBuf, store: Arc<Mutex<T>>) -> Result<Self> {
+    pub fn load(indexer: PathBuf, store: T) -> Result<Self> {
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::from_file(&engine, indexer.into_os_string()).unwrap();
-        let wasmstore = Arc::new(Mutex::new(Store::<State>::new(&engine, State::new())));
-        let height = Arc::new(Mutex::new(0));
-        let block = Arc::new(Mutex::new(vec![]));
+        let wasmstore = Store::<State>::new(&engine, State::new());
+        let runtime = MetashrewRuntime {
+          context: Arc::<Mutex<MetashrewRuntimeContext<T>>>::new(Mutex::<MetashrewRuntimeContext<T>>::new(MetashrewRuntimeContext::<T>::new(store, wasmstore, 0, vec![]))),
+          engine: engine,
+          module: module,
+        };
         {
-            (*wasmstore.lock().unwrap()).limiter(|state| &mut state.limits)
+            (*runtime.context.lock().unwrap()).wasmstore.limiter(|state| &mut state.limits)
         }
-        Ok(MetashrewRuntime {
-            db: store,
-            engine,
-            module,
-            wasmstore,
-            height,
-            block,
-        })
+        Ok(runtime)
     }
 
+    /*
     pub fn instantiate(&self) -> Result<wasmtime::Instance> {
         let mut store = self.wasmstore.lock().unwrap();
         let linker = Linker::new(&self.engine);
         linker.instantiate(&mut *store, &self.module)
     }
-
+*/
     pub fn db_make_list_key(v: &Vec<u8>, index: u32) -> Vec<u8> {
         let mut entry = v.clone();
         let index_bits: Vec<u8> = index.to_le_bytes().try_into().unwrap();
@@ -109,39 +120,35 @@ where
         return v.to_le_bytes().try_into().unwrap();
     }
 
-    pub fn check_latest_block_for_reorg(&self, height: u32) -> u32 {
-        match self
+    pub fn check_latest_block_for_reorg(context: Arc<Mutex<MetashrewRuntimeContext<T>>>, height: u32) -> u32 {
+        match context.lock().unwrap()
             .db
-            .lock()
-            .unwrap()
             .get(Self::db_make_length_key(&Self::db_make_updated_key(
                 &Self::u32_to_vec(height as u32),
             )))
             .unwrap()
         {
-            Some(_v) => self.check_latest_block_for_reorg(height + 1),
+            Some(_v) => Self::check_latest_block_for_reorg(context.clone(), height + 1),
             None => return height,
         }
     }
 
-    pub fn db_length_at_key(&self, length_key: &Vec<u8>) -> u32 {
-        return match self.db.lock().unwrap().get(length_key).unwrap() {
+    pub fn db_length_at_key(context: Arc<Mutex<MetashrewRuntimeContext<T>>>, length_key: &Vec<u8>) -> u32 {
+        return match context.lock().unwrap().db.get(length_key).unwrap() {
             Some(v) => u32::from_le_bytes(v.try_into().unwrap()),
             None => 0,
         };
     }
 
-    pub fn db_updated_keys_for_block(&self, height: u32) -> HashSet<Vec<u8>> {
+    pub fn db_updated_keys_for_block(context: Arc<Mutex<MetashrewRuntimeContext<T>>>, height: u32) -> HashSet<Vec<u8>> {
         let key: Vec<u8> =
             Self::db_make_length_key(&Self::db_make_updated_key(&Self::u32_to_vec(height)));
-        let length: i32 = Self::db_length_at_key(self, &key) as i32;
+        let length: i32 = Self::db_length_at_key(context.clone(), &key) as i32;
         let mut i: i32 = 0;
         let mut set: HashSet<Vec<u8>> = HashSet::<Vec<u8>>::new();
         while i < length {
             set.insert(
-                self.db
-                    .lock()
-                    .unwrap()
+                context.lock().unwrap().db
                     .get(&Self::db_make_list_key(&key, i as u32))
                     .unwrap()
                     .unwrap(),
@@ -151,29 +158,29 @@ where
         return set;
     }
 
-    pub fn db_updated_keys_for_block_range(&self, from: u32, to: u32) -> HashSet<Vec<u8>> {
+    pub fn db_updated_keys_for_block_range(context: Arc<Mutex<MetashrewRuntimeContext<T>>>, from: u32, to: u32) -> HashSet<Vec<u8>> {
         let mut i = from;
         let mut result: HashSet<Vec<u8>> = HashSet::<Vec<u8>>::new();
         while to >= i {
-            result.extend(Self::db_updated_keys_for_block(self, i));
+            result.extend(Self::db_updated_keys_for_block(context.clone(), i));
             i = i + 1;
         }
         return result;
     }
 
-    pub fn db_rollback_key(&self, key: &Vec<u8>, to_block: u32) {
-        let length: i32 = Self::db_length_at_key(self, &key).try_into().unwrap();
+    pub fn db_rollback_key(context: Arc<Mutex<MetashrewRuntimeContext<T>>>, key: &Vec<u8>, to_block: u32) {
+        let length: i32 = Self::db_length_at_key(context.clone(), &key).try_into().unwrap();
         let mut index: i32 = length - 1;
         let mut end_length: i32 = length;
         while index >= 0 {
             let list_key = Self::db_make_list_key(key, index.try_into().unwrap());
-            let _ = match self.db.lock().unwrap().get(&list_key).unwrap() {
+            let _ = match context.lock().unwrap().db.get(&list_key).unwrap() {
                 Some(value) => {
                     let value_height: u32 = u32::from_le_bytes(
                         value.as_slice()[(value.len() - 4)..].try_into().unwrap(),
                     );
                     if to_block <= value_height.try_into().unwrap() {
-                        self.db.lock().unwrap().delete(&list_key).unwrap();
+                        context.lock().unwrap().db.delete(&list_key).unwrap();
                         end_length = end_length - 1;
                     } else {
                         break;
@@ -186,29 +193,27 @@ where
             index -= 1;
         }
         if end_length != length {
-            Self::db_set_length(self, key, end_length as u32);
+            Self::db_set_length(context.clone(), key, end_length as u32);
         }
     }
 
-    pub fn db_set_length(&self, key: &Vec<u8>, length: u32) {
+    pub fn db_set_length(context: Arc<Mutex<MetashrewRuntimeContext<T>>>, key: &Vec<u8>, length: u32) {
         let length_key = Self::db_make_length_key(key);
         if length == 0 {
-            self.db.lock().unwrap().delete(&length_key).unwrap();
+            context.lock().unwrap().db.delete(&length_key).unwrap();
             return;
         }
         let new_length_bits: Vec<u8> = (length + 1).to_le_bytes().try_into().unwrap();
-        self.db
-            .lock()
-            .unwrap()
+        context.lock().unwrap().db
             .put(&length_key, &new_length_bits)
             .unwrap();
     }
 
-    pub fn handle_reorg(&self, from: u32) {
-        let latest: u32 = Self::check_latest_block_for_reorg(self, from);
-        let set: HashSet<Vec<u8>> = Self::db_updated_keys_for_block_range(self, from, latest);
+    pub fn handle_reorg(context: Arc<Mutex<MetashrewRuntimeContext<T>>>, from: u32) {
+        let latest: u32 = Self::check_latest_block_for_reorg(context.clone(), from);
+        let set: HashSet<Vec<u8>> = Self::db_updated_keys_for_block_range(context.clone(), from, latest);
         for key in set.iter() {
-            Self::db_rollback_key(self, &key, from);
+            Self::db_rollback_key(context.clone(), &key, from);
         }
     }
 
@@ -223,19 +228,15 @@ where
         );
     }
 
-    pub fn setup_linker(&'static self, linker: &mut Linker<State>) {
-        let input = self.block.lock().unwrap();
-        let height = self.height.lock().unwrap();
-        let mut input_clone: Vec<u8> =
-            <Vec<u8> as TryFrom<[u8; 4]>>::try_from(height.to_le_bytes()).unwrap();
-        input_clone.extend(input.clone());
-        let __host_len = input_clone.len();
+    pub fn setup_linker(context: Arc<Mutex<MetashrewRuntimeContext<T>>>, linker: &mut Linker<State>) {
+        let context_ref_len = context.clone();
+        let context_ref_input = context.clone();
         linker
             .func_wrap(
                 "env",
                 "__host_len",
                 move |mut _caller: Caller<'_, State>| -> i32 {
-                    return __host_len.try_into().unwrap();
+                    return context_ref_len.lock().unwrap().block.len() as i32 + 4;
                 },
             )
             .unwrap();
@@ -245,6 +246,14 @@ where
                 "__load_input",
                 move |mut caller: Caller<'_, State>, data_start: i32| {
                     let mem = caller.get_export("memory").unwrap().into_memory().unwrap();
+                    let (input, height) = {
+                      let ref_copy = context_ref_input.clone();
+                      let ctx = ref_copy.lock().unwrap();
+                      (ctx.block.clone(), ctx.height)
+                    };
+                    let mut input_clone: Vec<u8> =
+                        <Vec<u8> as TryFrom<[u8; 4]>>::try_from(height.to_le_bytes()).unwrap();
+                    input_clone.extend(input.clone());
                     let _ = mem.write(
                         &mut caller,
                         data_start.try_into().unwrap(),
@@ -283,15 +292,15 @@ where
         entry.extend(height);
         return entry;
     }
-    pub fn db_append_annotated<'a>(
-        &'a self,
+    pub fn db_append_annotated(
+        context: Arc<Mutex<MetashrewRuntimeContext<T>>>,
         batch: &mut rocksdb::WriteBatch,
         key: &Vec<u8>,
         value: &Vec<u8>,
         block_height: u32,
     ) {
         let length_key = Self::db_make_length_key(key);
-        let length: u32 = Self::db_length_at_key(self, &length_key);
+        let length: u32 = Self::db_length_at_key(context.clone(), &length_key);
         let entry = Self::db_annotate_value(value, block_height);
 
         let entry_key: Vec<u8> = Self::db_make_list_key(key, length);
@@ -299,22 +308,28 @@ where
         let new_length_bits: Vec<u8> = (length + 1).to_le_bytes().try_into().unwrap();
         batch.put(&length_key, &new_length_bits);
     }
-    pub fn db_append(&self, batch: &mut rocksdb::WriteBatch, key: &Vec<u8>, value: &Vec<u8>) {
+    pub fn db_append(context: Arc<Mutex<MetashrewRuntimeContext<T>>>, batch: &mut WriteBatchWithTransaction<false>, key: &Vec<u8>, value: &Vec<u8>) {
         let length_key = Self::db_make_length_key(key);
-        let length: u32 = Self::db_length_at_key(self, &length_key);
+        let length: u32 = Self::db_length_at_key(context.clone(), &length_key);
         let entry_key: Vec<u8> = Self::db_make_list_key(key, length);
         batch.put(&entry_key, &value);
         let new_length_bits: Vec<u8> = (length + 1).to_le_bytes().try_into().unwrap();
         batch.put(&length_key, &new_length_bits);
     }
 
-    pub fn setup_linker_indexer(&'static self, linker: &mut Linker<State>) {
-        let height = *self.height.lock().unwrap();
+    pub fn setup_linker_indexer(context: Arc<Mutex<MetashrewRuntimeContext<T>>>, linker: &mut Linker<State>) {
+        let context_ref = context.clone();
+        let context_get = context.clone();
+        let context_get_len = context.clone();
         linker
             .func_wrap(
                 "env",
                 "__flush",
                 move |mut caller: Caller<'_, State>, encoded: i32| {
+                    let height = {
+                      let val = context_ref.clone().lock().unwrap().height;
+                      val
+                    };
                     let mem = caller.get_export("memory").unwrap().into_memory().unwrap();
                     let data = mem.data(&caller);
                     let encoded_vec = Self::read_arraybuffer_as_vec(data, encoded);
@@ -326,7 +341,7 @@ where
                         let k_owned = <Vec<u8> as Clone>::clone(k);
                         let v_owned = <Vec<u8> as Clone>::clone(v);
                         Self::db_append_annotated(
-                            self,
+                            context_ref.clone(),
                             &mut batch,
                             &k_owned,
                             &v_owned,
@@ -335,14 +350,14 @@ where
                         let update_key: Vec<u8> =
                             <Vec<u8> as TryFrom<[u8; 4]>>::try_from((height as u32).to_le_bytes())
                                 .unwrap();
-                        Self::db_append(self, &mut batch, &update_key, &k_owned);
+                        Self::db_append(context_ref.clone(), &mut batch, &update_key, &k_owned);
                     }
                     debug!(
                         "saving {:?} k/v pairs for block {:?}",
                         decoded.len() / 2,
                         height
                     );
-                    (self.db).lock().unwrap().write(batch).unwrap();
+                    context_ref.clone().lock().unwrap().db.write(batch).unwrap();
                 },
             )
             .unwrap();
@@ -354,15 +369,10 @@ where
                     let mem = caller.get_export("memory").unwrap().into_memory().unwrap();
                     let data = mem.data(&caller);
                     let key_vec = Self::read_arraybuffer_as_vec(data, key);
-                    let length = Self::db_length_at_key(self, &Self::db_make_length_key(&key_vec));
+                    let length = Self::db_length_at_key(context_get.clone(), &Self::db_make_length_key(&key_vec));
                     if length != 0 {
                         let indexed_key = Self::db_make_list_key(&key_vec, length - 1);
-                        let mut value_vec = (self.db)
-                            .lock()
-                            .unwrap()
-                            .get(&indexed_key)
-                            .unwrap()
-                            .unwrap();
+                        let mut value_vec = (context_get.clone().lock().unwrap().db).get(&indexed_key).unwrap().unwrap();
                         value_vec.truncate(value_vec.len().saturating_sub(4));
                         let _ =
                             mem.write(&mut caller, value.try_into().unwrap(), value_vec.as_slice());
@@ -378,15 +388,10 @@ where
                     let mem = caller.get_export("memory").unwrap().into_memory().unwrap();
                     let data = mem.data(&caller);
                     let key_vec = Self::read_arraybuffer_as_vec(data, key);
-                    let length = Self::db_length_at_key(self, &Self::db_make_length_key(&key_vec));
+                    let length = Self::db_length_at_key(context_get_len.clone(), &Self::db_make_length_key(&key_vec));
                     if length != 0 {
                         let indexed_key = Self::db_make_list_key(&key_vec, length - 1);
-                        let value_vec = (self.db)
-                            .lock()
-                            .unwrap()
-                            .get(&indexed_key)
-                            .unwrap()
-                            .unwrap();
+                        let value_vec = context_get_len.clone().lock().unwrap().db.get(&indexed_key).unwrap().unwrap();
                         return (value_vec.len() - 4).try_into().unwrap();
                     } else {
                         return 0;
