@@ -40,7 +40,7 @@ pub struct State {
 }
 
 pub struct MetashrewRuntime<T: KeyValueStoreLike> {
-    pub db: Arc<T>,
+    pub db: Arc<Mutex<T>>,
     engine: wasmtime::Engine,
     module: wasmtime::Module,
     wasmstore: Arc<Mutex<wasmtime::Store<State>>>,
@@ -65,7 +65,7 @@ where
     T: KeyValueStoreLike<Batch = WriteBatchWithTransaction<false>>,
     T: Sync + Send,
 {
-    pub fn load(indexer: PathBuf, store: Arc<T>) -> Result<Self> {
+    pub fn load(indexer: PathBuf, store: Arc<Mutex<T>>) -> Result<Self> {
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::from_file(&engine, indexer.into_os_string()).unwrap();
         let wasmstore = Arc::new(Mutex::new(Store::<State>::new(&engine, State::new())));
@@ -112,6 +112,8 @@ where
     pub fn check_latest_block_for_reorg(&self, height: u32) -> u32 {
         match self
             .db
+            .lock()
+            .unwrap()
             .get(Self::db_make_length_key(&Self::db_make_updated_key(
                 &Self::u32_to_vec(height as u32),
             )))
@@ -123,7 +125,7 @@ where
     }
 
     pub fn db_length_at_key(&self, length_key: &Vec<u8>) -> u32 {
-        return match self.db.get(length_key).unwrap() {
+        return match self.db.lock().unwrap().get(length_key).unwrap() {
             Some(v) => u32::from_le_bytes(v.try_into().unwrap()),
             None => 0,
         };
@@ -138,6 +140,8 @@ where
         while i < length {
             set.insert(
                 self.db
+                    .lock()
+                    .unwrap()
                     .get(&Self::db_make_list_key(&key, i as u32))
                     .unwrap()
                     .unwrap(),
@@ -163,13 +167,13 @@ where
         let mut end_length: i32 = length;
         while index >= 0 {
             let list_key = Self::db_make_list_key(key, index.try_into().unwrap());
-            let _ = match self.db.get(&list_key).unwrap() {
+            let _ = match self.db.lock().unwrap().get(&list_key).unwrap() {
                 Some(value) => {
                     let value_height: u32 = u32::from_le_bytes(
                         value.as_slice()[(value.len() - 4)..].try_into().unwrap(),
                     );
                     if to_block <= value_height.try_into().unwrap() {
-                        self.db.delete(&list_key).unwrap();
+                        self.db.lock().unwrap().delete(&list_key).unwrap();
                         end_length = end_length - 1;
                     } else {
                         break;
@@ -189,11 +193,15 @@ where
     pub fn db_set_length(&self, key: &Vec<u8>, length: u32) {
         let length_key = Self::db_make_length_key(key);
         if length == 0 {
-            self.db.delete(&length_key).unwrap();
+            self.db.lock().unwrap().delete(&length_key).unwrap();
             return;
         }
         let new_length_bits: Vec<u8> = (length + 1).to_le_bytes().try_into().unwrap();
-        self.db.put(&length_key, &new_length_bits).unwrap();
+        self.db
+            .lock()
+            .unwrap()
+            .put(&length_key, &new_length_bits)
+            .unwrap();
     }
 
     pub fn handle_reorg(&self, from: u32) {
@@ -334,7 +342,7 @@ where
                         decoded.len() / 2,
                         height
                     );
-                    (self.db).write(batch).unwrap();
+                    (self.db).lock().unwrap().write(batch).unwrap();
                 },
             )
             .unwrap();
@@ -349,7 +357,12 @@ where
                     let length = Self::db_length_at_key(self, &Self::db_make_length_key(&key_vec));
                     if length != 0 {
                         let indexed_key = Self::db_make_list_key(&key_vec, length - 1);
-                        let mut value_vec = (self.db).get(&indexed_key).unwrap().unwrap();
+                        let mut value_vec = (self.db)
+                            .lock()
+                            .unwrap()
+                            .get(&indexed_key)
+                            .unwrap()
+                            .unwrap();
                         value_vec.truncate(value_vec.len().saturating_sub(4));
                         let _ =
                             mem.write(&mut caller, value.try_into().unwrap(), value_vec.as_slice());
@@ -368,7 +381,12 @@ where
                     let length = Self::db_length_at_key(self, &Self::db_make_length_key(&key_vec));
                     if length != 0 {
                         let indexed_key = Self::db_make_list_key(&key_vec, length - 1);
-                        let value_vec = (self.db).get(&indexed_key).unwrap().unwrap();
+                        let value_vec = (self.db)
+                            .lock()
+                            .unwrap()
+                            .get(&indexed_key)
+                            .unwrap()
+                            .unwrap();
                         return (value_vec.len() - 4).try_into().unwrap();
                     } else {
                         return 0;
