@@ -113,7 +113,7 @@ pub fn db_annotate_value(v: &Vec<u8>, block_height: u32) -> Vec<u8> {
 
 impl<T: KeyValueStoreLike> MetashrewRuntime<T>
 where
-    T: KeyValueStoreLike<Batch = WriteBatchWithTransaction<false>>,
+    T: KeyValueStoreLike<Batch = RocksDBBatch>,
     T: Sync + Send,
 {
     pub fn load(indexer: PathBuf, store: T) -> Result<Self> {
