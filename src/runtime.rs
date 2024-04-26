@@ -24,7 +24,7 @@ pub trait KeyValueStoreLike {
         V: AsRef<[u8]>;
 }
 
-pub struct RocksDBBatch(WriteBatchWithTransaction<false>);
+pub struct RocksDBBatch(pub WriteBatchWithTransaction<false>);
 
 impl BatchLike for RocksDBBatch {
     fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, value: V) {
