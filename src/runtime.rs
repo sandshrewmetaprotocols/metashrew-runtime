@@ -150,7 +150,7 @@ where
         let value_vec: Vec<u8> = (0 as u32).to_le_bytes().try_into().unwrap();
         batch.put(&key, &value_vec);
     }
-    pub fn run(&self) -> () {
+    pub fn run(&mut self) -> () {
       let start = self.instance
         .get_typed_func::<(), ()>(&mut self.wasmstore, "_start")
         .unwrap();
@@ -248,8 +248,7 @@ where
 
     pub fn handle_reorg(context: Arc<Mutex<MetashrewRuntimeContext<T>>>) {
         let height = {
-            let context_ref = context.clone();
-            context_ref.lock().unwrap().height
+            context.lock().unwrap().height
         };
         let latest: u32 = Self::check_latest_block_for_reorg(context.clone(), height);
         let set: HashSet<Vec<u8>> = Self::db_updated_keys_for_block_range(context.clone(), height, latest);
