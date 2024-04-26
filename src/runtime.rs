@@ -111,7 +111,7 @@ pub fn db_annotate_value(v: &Vec<u8>, block_height: u32) -> Vec<u8> {
     return entry;
 }
 
-impl<T: KeyValueStoreLike + wasmtime::AsContextMut> MetashrewRuntime<T>
+impl<T: KeyValueStoreLike> MetashrewRuntime<T>
 where
     T: KeyValueStoreLike<Batch = WriteBatchWithTransaction<false>>,
     T: Sync + Send,
