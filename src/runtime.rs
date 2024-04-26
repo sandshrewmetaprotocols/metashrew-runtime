@@ -62,6 +62,7 @@ pub struct MetashrewRuntime<T: KeyValueStoreLike + 'static> {
    pub context: Arc<Mutex<MetashrewRuntimeContext<T>>>,
    pub engine: wasmtime::Engine,
    pub module: wasmtime::Module,
+   pub linker: wasmtime::Linker<State>
 }
 
 
@@ -123,14 +124,20 @@ where
     pub fn load(indexer: PathBuf, store: T) -> Result<Self> {
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::from_file(&engine, indexer.into_os_string()).unwrap();
+        let linker = Linker::<State>::new(&engine);
         let wasmstore = Store::<State>::new(&engine, State::new());
-        let runtime = MetashrewRuntime {
+        let mut runtime = MetashrewRuntime {
           context: Arc::<Mutex<MetashrewRuntimeContext<T>>>::new(Mutex::<MetashrewRuntimeContext<T>>::new(MetashrewRuntimeContext::<T>::new(store, wasmstore, 0, vec![]))),
           engine: engine,
           module: module,
+          linker: linker
         };
         {
             (*runtime.context.lock().unwrap()).wasmstore.limiter(|state| &mut state.limits)
+        }
+        {
+          Self::setup_linker(runtime.context.clone(), &mut runtime.linker);
+          Self::setup_linker_indexer(runtime.context.clone(), &mut runtime.linker);
         }
         Ok(runtime)
     }
