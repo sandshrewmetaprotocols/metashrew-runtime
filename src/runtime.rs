@@ -391,7 +391,7 @@ where
                     let mem = caller.get_export("memory").unwrap().into_memory().unwrap();
                     let data = mem.data(&caller);
                     let encoded_vec = read_arraybuffer_as_vec(data, encoded);
-                    let mut batch = rocksdb::WriteBatch::default();
+                    let mut batch = RocksDBBatch(rocksdb::WriteBatch::default());
                     let _ = Self::db_create_empty_update_list(&mut batch, height as u32);
                     let decoded: Vec<Vec<u8>> = rlp::decode_list(&encoded_vec);
 
@@ -400,7 +400,7 @@ where
                         let v_owned = <Vec<u8> as Clone>::clone(v);
                         Self::db_append_annotated(
                             context_ref.clone(),
-                            &mut batch,
+                            &mut batch.0,
                             &k_owned,
                             &v_owned,
                             height as u32,
@@ -408,7 +408,7 @@ where
                         let update_key: Vec<u8> =
                             <Vec<u8> as TryFrom<[u8; 4]>>::try_from((height as u32).to_le_bytes())
                                 .unwrap();
-                        Self::db_append(context_ref.clone(), &mut batch, &update_key, &k_owned);
+                        Self::db_append(context_ref.clone(), &mut batch.0, &update_key, &k_owned);
                     }
                     debug!(
                         "saving {:?} k/v pairs for block {:?}",
