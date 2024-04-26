@@ -44,16 +44,14 @@ pub struct MetashrewRuntimeContext<T: KeyValueStoreLike> {
   pub db: T,
   pub height: u32,
   pub block: SerBlock,
-  pub wasmstore: Store<State>,
 }
 
 impl<T: KeyValueStoreLike> MetashrewRuntimeContext<T> {
-  fn new(db: T, wasmstore: Store<State>, height: u32, block: SerBlock) -> Self {
+  fn new(db: T, height: u32, block: SerBlock) -> Self {
     return Self {
       db: db,
       height: height,
-      block: block,
-      wasmstore: wasmstore
+      block: block
     };
   }
 }
@@ -61,8 +59,10 @@ impl<T: KeyValueStoreLike> MetashrewRuntimeContext<T> {
 pub struct MetashrewRuntime<T: KeyValueStoreLike + 'static> {
    pub context: Arc<Mutex<MetashrewRuntimeContext<T>>>,
    pub engine: wasmtime::Engine,
+   pub wasmstore: wasmtime::Store<State>,
    pub module: wasmtime::Module,
-   pub linker: wasmtime::Linker<State>
+   pub linker: wasmtime::Linker<State>,
+   pub instance: wasmtime::Instance
 }
 
 
@@ -116,7 +116,7 @@ pub fn db_annotate_value(v: &Vec<u8>, block_height: u32) -> Vec<u8> {
 }
 
 
-impl<T: KeyValueStoreLike> MetashrewRuntime<T>
+impl<T: KeyValueStoreLike + wasmtime::AsContextMut> MetashrewRuntime<T>
 where
     T: KeyValueStoreLike<Batch = WriteBatchWithTransaction<false>>,
     T: Sync + Send,
@@ -124,22 +124,25 @@ where
     pub fn load(indexer: PathBuf, store: T) -> Result<Self> {
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::from_file(&engine, indexer.into_os_string()).unwrap();
-        let linker = Linker::<State>::new(&engine);
-        let wasmstore = Store::<State>::new(&engine, State::new());
-        let mut runtime = MetashrewRuntime {
-          context: Arc::<Mutex<MetashrewRuntimeContext<T>>>::new(Mutex::<MetashrewRuntimeContext<T>>::new(MetashrewRuntimeContext::<T>::new(store, wasmstore, 0, vec![]))),
+        let mut linker = Linker::<State>::new(&engine);
+        let mut wasmstore = Store::<State>::new(&engine, State::new());
+        let context = Arc::<Mutex<MetashrewRuntimeContext<T>>>::new(Mutex::<MetashrewRuntimeContext<T>>::new(MetashrewRuntimeContext::<T>::new(store, 0, vec![])));
+        {
+            wasmstore.limiter(|state| &mut state.limits)
+        }
+        {
+          Self::setup_linker(context.clone(), &mut linker);
+          Self::setup_linker_indexer(context.clone(), &mut linker);
+        }
+        let instance = linker.instantiate(&mut wasmstore, &module).unwrap();
+        return Ok(MetashrewRuntime {
+          wasmstore: wasmstore,
           engine: engine,
           module: module,
-          linker: linker
-        };
-        {
-            (*runtime.context.lock().unwrap()).wasmstore.limiter(|state| &mut state.limits)
-        }
-        {
-          Self::setup_linker(runtime.context.clone(), &mut runtime.linker);
-          Self::setup_linker_indexer(runtime.context.clone(), &mut runtime.linker);
-        }
-        Ok(runtime)
+          linker: linker,
+          context: context,
+          instance: instance
+        });
     }
     pub fn db_create_empty_update_list(batch: &mut T::Batch, height: u32) {
         let height_vec: Vec<u8> = height.to_le_bytes().try_into().unwrap();
@@ -147,7 +150,13 @@ where
         let value_vec: Vec<u8> = (0 as u32).to_le_bytes().try_into().unwrap();
         batch.put(&key, &value_vec);
     }
-
+    pub fn run(&self) -> () {
+      let start = self.instance
+        .get_typed_func::<(), ()>(&mut self.wasmstore, "_start")
+        .unwrap();
+      Self::handle_reorg(self.context.clone());
+      start.call(&mut self.wasmstore, ()).unwrap();
+    }
     pub fn check_latest_block_for_reorg(context: Arc<Mutex<MetashrewRuntimeContext<T>>>, height: u32) -> u32 {
         match context.lock().unwrap()
             .db
@@ -237,11 +246,15 @@ where
             .unwrap();
     }
 
-    pub fn handle_reorg(context: Arc<Mutex<MetashrewRuntimeContext<T>>>, from: u32) {
-        let latest: u32 = Self::check_latest_block_for_reorg(context.clone(), from);
-        let set: HashSet<Vec<u8>> = Self::db_updated_keys_for_block_range(context.clone(), from, latest);
+    pub fn handle_reorg(context: Arc<Mutex<MetashrewRuntimeContext<T>>>) {
+        let height = {
+            let context_ref = context.clone();
+            context_ref.lock().unwrap().height
+        };
+        let latest: u32 = Self::check_latest_block_for_reorg(context.clone(), height);
+        let set: HashSet<Vec<u8>> = Self::db_updated_keys_for_block_range(context.clone(), height, latest);
         for key in set.iter() {
-            Self::db_rollback_key(context.clone(), &key, from);
+            Self::db_rollback_key(context.clone(), &key, height);
         }
     }
 
