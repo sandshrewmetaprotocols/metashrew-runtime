@@ -157,6 +157,8 @@ where
       Self::handle_reorg(self.context.clone());
       start.call(&mut self.wasmstore, ()).unwrap();
     }
+    pub fn view(&mut self) -> () {
+      
     pub fn check_latest_block_for_reorg(context: Arc<Mutex<MetashrewRuntimeContext<T>>>, height: u32) -> u32 {
         match context.lock().unwrap()
             .db
