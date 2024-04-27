@@ -149,13 +149,13 @@ where
         let value_vec: Vec<u8> = (0 as u32).to_le_bytes().try_into().unwrap();
         batch.put(&key, &value_vec);
     }
-    pub fn run(&mut self) -> () {
+    pub fn run(&mut self) -> Result<(), anyhow::Error> {
         let start = self
             .instance
             .get_typed_func::<(), ()>(&mut self.wasmstore, "_start")
             .unwrap();
         Self::handle_reorg(self.context.clone());
-        start.call(&mut self.wasmstore, ()).unwrap();
+        start.call(&mut self.wasmstore, ())
     }
 
     pub fn check_latest_block_for_reorg(
