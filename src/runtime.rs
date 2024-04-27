@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use electrs_rocksdb as rocksdb;
 use itertools::Itertools;
 use rlp;
@@ -95,14 +95,21 @@ pub fn u32_to_vec(v: u32) -> Vec<u8> {
     return v.to_le_bytes().try_into().unwrap();
 }
 
-pub fn read_arraybuffer_as_vec(data: &[u8], data_start: i32) -> Vec<u8> {
-    if data_start < 4 { return Vec::<u8>::new(); }
+pub fn try_read_arraybuffer_as_vec(data: &[u8], data_start: i32) -> Result<Vec<u8>> {
+    if data_start < 4 { return Err(anyhow!("memory error")); }
     let len = u32::from_le_bytes(
         (data[((data_start - 4) as usize)..(data_start as usize)])
             .try_into()
             .unwrap(),
     );
-    return Vec::<u8>::from(&data[(data_start as usize)..(((data_start as u32) + len) as usize)]);
+    return Ok(Vec::<u8>::from(&data[(data_start as usize)..(((data_start as u32) + len) as usize)]));
+}
+
+pub fn read_arraybuffer_as_vec(data: &[u8], data_start: i32) -> Vec<u8> {
+    match try_read_arraybuffer_as_vec(data, data_start) {
+      Ok(v) => v,
+      Err(_) => Vec::<u8>::new()
+    }
 }
 
 pub fn db_annotate_value(v: &Vec<u8>, block_height: u32) -> Vec<u8> {
@@ -438,19 +445,24 @@ where
                 move |mut caller: Caller<'_, State>, key: i32, value: i32| {
                     let mem = caller.get_export("memory").unwrap().into_memory().unwrap();
                     let data = mem.data(&caller);
-                    let key_vec = read_arraybuffer_as_vec(data, key);
-                    let length =
-                        Self::db_length_at_key(context_get.clone(), &db_make_length_key(&key_vec));
-                    if length != 0 {
-                        let indexed_key = db_make_list_key(&key_vec, length - 1);
-                        let mut value_vec = (context_get.clone().lock().unwrap().db)
-                            .get(&indexed_key)
-                            .unwrap()
-                            .unwrap();
-                        value_vec.truncate(value_vec.len().saturating_sub(4));
-                        let _ =
-                            mem.write(&mut caller, value.try_into().unwrap(), value_vec.as_slice());
-                    }
+                    let key_vec_result = try_read_arraybuffer_as_vec(data, key);
+                    match key_vec_result {
+                        Ok(key_vec) => {
+                            let length =
+                                Self::db_length_at_key(context_get.clone(), &db_make_length_key(&key_vec));
+                            if length != 0 {
+                                let indexed_key = db_make_list_key(&key_vec, length - 1);
+                                let mut value_vec = (context_get.clone().lock().unwrap().db)
+                                    .get(&indexed_key)
+                                    .unwrap()
+                                    .unwrap();
+                                value_vec.truncate(value_vec.len().saturating_sub(4));
+                                let _ =
+                                    mem.write(&mut caller, value.try_into().unwrap(), value_vec.as_slice());
+                            }
+                        },
+                        Err(_) => { mem.write(&mut caller, (value - 4) as usize, <[u8; 4] as TryInto<Vec<u8>>>::try_into(u32::MAX.to_le_bytes()).unwrap().as_slice()).unwrap(); }
+                    };
                 },
             )
             .unwrap();
@@ -461,7 +473,10 @@ where
                 move |mut caller: Caller<'_, State>, key: i32| -> i32 {
                     let mem = caller.get_export("memory").unwrap().into_memory().unwrap();
                     let data = mem.data(&caller);
-                    let key_vec = read_arraybuffer_as_vec(data, key);
+                    let key_vec = match try_read_arraybuffer_as_vec(data, key) {
+                      Ok(v) => v,
+                      Err(_) => { return i32::MAX }
+                    };
                     let length = Self::db_length_at_key(
                         context_get_len.clone(),
                         &db_make_length_key(&key_vec),
