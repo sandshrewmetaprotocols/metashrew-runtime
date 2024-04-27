@@ -140,6 +140,7 @@ where
         {
             Self::setup_linker(context.clone(), &mut linker);
             Self::setup_linker_indexer(context.clone(), &mut linker);
+            linker.define_unknown_imports_as_traps(&module)?;
         }
         let instance = linker.instantiate(&mut wasmstore, &module).unwrap();
         return Ok(MetashrewRuntime {
@@ -355,11 +356,13 @@ where
                 },
             )
             .unwrap();
+        /*
         linker
             .func_wrap("env", "abort", |_: i32, _: i32, _: i32, _: i32| {
                 panic!("abort!");
             })
             .unwrap();
+            */
     }
     pub fn db_append_annotated(
         context: Arc<Mutex<MetashrewRuntimeContext<T>>>,
