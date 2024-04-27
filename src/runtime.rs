@@ -153,6 +153,32 @@ where
         });
     }
 
+    pub fn view(&mut self, symbol: String, input: &Vec<u8>, height: u32) -> Result<Vec<u8>> {
+        let mut linker = Linker::<State>::new(&self.engine);
+        let mut wasmstore = Store::<State>::new(&self.engine, State::new());
+        let context = self.context.clone();
+        {
+          (context.lock().unwrap().height, context.lock().unwrap().block) = (height, input.clone());
+        }
+        {
+            wasmstore.limiter(|state| &mut state.limits)
+        }
+        {
+            Self::setup_linker(context.clone(), &mut linker);
+            Self::setup_linker_view(context.clone(), &mut linker);
+            linker.define_unknown_imports_as_traps(&self.module)?;
+        }
+        let instance = linker.instantiate(&mut wasmstore, &self.module).unwrap();
+        let func = self
+            .instance
+            .get_typed_func::<(), i32>(&mut wasmstore, symbol.as_str())
+            .unwrap();
+        let result = func.call(&mut wasmstore, ());
+        return match result {
+          Ok(v) => Ok(read_arraybuffer_as_vec(instance.get_memory(&mut wasmstore, "memory").unwrap().data(&mut wasmstore), v)),
+          Err(e) => Err(e)
+        };
+    }
     pub fn refresh_memory(&mut self) {
         let mut wasmstore = Store::<State>::new(&self.engine, State::new());
         wasmstore.limiter(|state| &mut state.limits);
@@ -227,6 +253,28 @@ where
             i = i + 1;
         }
         return set;
+    }
+    pub fn db_value_at_block(context: Arc<Mutex<MetashrewRuntimeContext<T>>>, key: &Vec<u8>, height: u32) -> Vec<u8> {
+        let length: i32 = Self::db_length_at_key(context.clone(), &key).try_into().unwrap();
+        let mut index: i32 = length - 1;
+        while index >= 0 {
+            let value: Vec<u8> = match context.lock().unwrap()
+                .db
+                .get(db_make_list_key(key, index.try_into().unwrap()))
+                .unwrap()
+            {
+                Some(v) => v,
+                None => db_make_list_key(&Vec::<u8>::new(), 0),
+            };
+
+            let value_height: u32 =
+                u32::from_le_bytes(value.as_slice()[(value.len() - 4)..].try_into().unwrap());
+            if height >= value_height.try_into().unwrap() {
+                value.clone().truncate(value.len().saturating_sub(4));
+            }
+            index -= 1;
+        }
+        return vec![];
     }
 
     pub fn db_updated_keys_for_block_range(
@@ -393,7 +441,33 @@ where
         let new_length_bits: Vec<u8> = (length + 1).to_le_bytes().try_into().unwrap();
         batch.put(&length_key, &new_length_bits);
     }
-
+    pub fn setup_linker_view(context: Arc<Mutex<MetashrewRuntimeContext<T>>>, linker: &mut Linker<State>) {
+      let context_get = context.clone();
+      let context_get_len = context.clone();
+      linker.func_wrap("env", "__flush", move |_caller: Caller<'_, State>, _encoded: i32| {}).unwrap();
+      linker.func_wrap("env", "__get", move |mut caller: Caller<'_, State>, key: i32, value: i32| {
+        let mem = caller.get_export("memory").unwrap().into_memory().unwrap();
+        let data = mem.data(&caller);
+        let key_vec_result = try_read_arraybuffer_as_vec(data, key);
+        match key_vec_result {
+          Ok(key_vec) => {
+            let value = Self::db_value_at_block(context_get.clone(), &key_vec, context_get.lock().unwrap().height);
+            let _ = mem.write(&mut caller, value.len(), value.as_slice());
+          }
+          Err(_) => { mem.write(&mut caller, (value - 4) as usize, <[u8; 4] as TryInto<Vec<u8>>>::try_into(u32::MAX.to_le_bytes()).unwrap().as_slice()).unwrap(); }
+        };
+      }).unwrap();
+      linker.func_wrap("env", "__get_len", move |mut caller: Caller<'_, State>, key: i32| -> i32 {
+        let mem = caller.get_export("memory").unwrap().into_memory().unwrap();
+        let data = mem.data(&caller);
+        let key_vec = match try_read_arraybuffer_as_vec(data, key) {
+          Ok(v) => v,
+          Err(_) => { return i32::MAX }
+        };
+        let value = Self::db_value_at_block(context_get_len.clone(), &key_vec, context_get_len.lock().unwrap().height);
+        return value.len().try_into().unwrap();
+      }).unwrap();
+    }
     pub fn setup_linker_indexer(
         context: Arc<Mutex<MetashrewRuntimeContext<T>>>,
         linker: &mut Linker<State>,
