@@ -143,6 +143,17 @@ where
             instance: instance,
         });
     }
+
+    pub fn refresh_memory(&mut self) {
+        let mut wasmstore = Store::<State>::new(&self.engine, State::new());
+        wasmstore.limiter(|state| &mut state.limits);
+        self.instance = self
+            .linker
+            .instantiate(&mut wasmstore, &self.module)
+            .unwrap();
+        self.wasmstore = wasmstore;
+    }
+
     pub fn db_create_empty_update_list(batch: &mut T::Batch, height: u32) {
         let height_vec: Vec<u8> = height.to_le_bytes().try_into().unwrap();
         let key: Vec<u8> = db_make_length_key(&db_make_updated_key(&height_vec));
