@@ -454,7 +454,7 @@ where
             let value = Self::db_value_at_block(context_get.clone(), &key_vec, context_get.lock().unwrap().height);
             let _ = mem.write(&mut caller, value.len(), value.as_slice());
           }
-          Err(_) => { mem.write(&mut caller, (value - 4) as usize, <[u8; 4] as TryInto<Vec<u8>>>::try_into(u32::MAX.to_le_bytes()).unwrap().as_slice()).unwrap(); }
+          Err(_) => { mem.write(&mut caller, (value - 4) as usize, <[u8; 4] as TryInto<Vec<u8>>>::try_into(i32::MAX.to_le_bytes()).unwrap().as_slice()).unwrap(); }
         };
       }).unwrap();
       linker.func_wrap("env", "__get_len", move |mut caller: Caller<'_, State>, key: i32| -> i32 {
@@ -538,7 +538,7 @@ where
                                     mem.write(&mut caller, value.try_into().unwrap(), value_vec.as_slice());
                             }
                         },
-                        Err(_) => { mem.write(&mut caller, (value - 4) as usize, <[u8; 4] as TryInto<Vec<u8>>>::try_into(u32::MAX.to_le_bytes()).unwrap().as_slice()).unwrap(); }
+                        Err(_) => { mem.write(&mut caller, (value - 4) as usize, <[u8; 4] as TryInto<Vec<u8>>>::try_into(i32::MAX.to_le_bytes()).unwrap().as_slice()).unwrap(); }
                     };
                 },
             )
