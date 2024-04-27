@@ -96,6 +96,7 @@ pub fn u32_to_vec(v: u32) -> Vec<u8> {
 }
 
 pub fn read_arraybuffer_as_vec(data: &[u8], data_start: i32) -> Vec<u8> {
+    if data_start < 4 { return Vec::<u8>::new(); }
     let len = u32::from_le_bytes(
         (data[((data_start - 4) as usize)..(data_start as usize)])
             .try_into()
