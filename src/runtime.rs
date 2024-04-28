@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow};
-use electrs_rocksdb as rocksdb;
 use itertools::Itertools;
 use rlp;
 use rocksdb::WriteBatchWithTransaction;
+use rocksdb;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
