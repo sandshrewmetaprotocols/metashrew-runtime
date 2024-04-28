@@ -1,7 +1,6 @@
 use anyhow::{Result, anyhow};
 use itertools::Itertools;
 use rlp;
-use rocksdb;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -10,6 +9,7 @@ use wasmtime::{Caller, Linker, Store, StoreLimits, StoreLimitsBuilder};
 type SerBlock = Vec<u8>;
 pub trait BatchLike {
     fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, value: V);
+    fn default() -> Self;
 }
 pub trait KeyValueStoreLike {
     type Error: std::fmt::Debug;
@@ -21,14 +21,6 @@ pub trait KeyValueStoreLike {
     where
         K: AsRef<[u8]>,
         V: AsRef<[u8]>;
-}
-
-pub struct RocksDBBatch(pub rocksdb::WriteBatch);
-
-impl BatchLike for RocksDBBatch {
-    fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, value: V) {
-        self.0.put(key, value);
-    }
 }
 
 //const TIP_KEY: &[u8] = b"T";
@@ -120,7 +112,7 @@ pub fn db_annotate_value(v: &Vec<u8>, block_height: u32) -> Vec<u8> {
 
 impl<T: KeyValueStoreLike> MetashrewRuntime<T>
 where
-    T: KeyValueStoreLike<Batch = RocksDBBatch>,
+    T: KeyValueStoreLike,
     T: Sync + Send,
 {
     pub fn load(indexer: PathBuf, store: T) -> Result<Self> {
@@ -413,7 +405,7 @@ where
     }
     pub fn db_append_annotated(
         context: Arc<Mutex<MetashrewRuntimeContext<T>>>,
-        batch: &mut rocksdb::WriteBatch,
+        batch: &mut T::Batch,
         key: &Vec<u8>,
         value: &Vec<u8>,
         block_height: u32,
@@ -429,7 +421,7 @@ where
     }
     pub fn db_append(
         context: Arc<Mutex<MetashrewRuntimeContext<T>>>,
-        batch: &mut rocksdb::WriteBatch,
+        batch: &mut T::Batch,
         key: &Vec<u8>,
         value: &Vec<u8>,
     ) {
@@ -486,7 +478,7 @@ where
                     let mem = caller.get_export("memory").unwrap().into_memory().unwrap();
                     let data = mem.data(&caller);
                     let encoded_vec = read_arraybuffer_as_vec(data, encoded);
-                    let mut batch = RocksDBBatch(rocksdb::WriteBatch::default());
+                    let mut batch = T::Batch::default();
                     let _ = Self::db_create_empty_update_list(&mut batch, height as u32);
                     let decoded: Vec<Vec<u8>> = rlp::decode_list(&encoded_vec);
 
@@ -495,7 +487,7 @@ where
                         let v_owned = <Vec<u8> as Clone>::clone(v);
                         Self::db_append_annotated(
                             context_ref.clone(),
-                            &mut batch.0,
+                            &mut batch,
                             &k_owned,
                             &v_owned,
                             height as u32,
@@ -503,7 +495,7 @@ where
                         let update_key: Vec<u8> =
                             <Vec<u8> as TryFrom<[u8; 4]>>::try_from((height as u32).to_le_bytes())
                                 .unwrap();
-                        Self::db_append(context_ref.clone(), &mut batch.0, &update_key, &k_owned);
+                        Self::db_append(context_ref.clone(), &mut batch, &update_key, &k_owned);
                     }
                     debug!(
                         "saving {:?} k/v pairs for block {:?}",
