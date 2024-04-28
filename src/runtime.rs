@@ -30,13 +30,23 @@ pub struct State {
     limits: StoreLimits,
 }
 
-pub struct MetashrewRuntimeContext<T: KeyValueStoreLike> {
+pub struct MetashrewRuntimeContext<T: KeyValueStoreLike + Clone> {
     pub db: T,
     pub height: u32,
     pub block: SerBlock,
 }
 
-impl<T: KeyValueStoreLike> MetashrewRuntimeContext<T> {
+impl<T: KeyValueStoreLike + Clone> Clone for MetashrewRuntimeContext<T> {
+  fn clone(&self) -> Self {
+    return Self {
+      db: self.db.clone(),
+      height: self.height,
+      block: self.block.clone()
+    };
+  }
+}
+
+impl<T: KeyValueStoreLike + Clone> MetashrewRuntimeContext<T> {
     fn new(db: T, height: u32, block: SerBlock) -> Self {
         return Self {
             db: db,
@@ -46,7 +56,7 @@ impl<T: KeyValueStoreLike> MetashrewRuntimeContext<T> {
     }
 }
 
-pub struct MetashrewRuntime<T: KeyValueStoreLike + 'static> {
+pub struct MetashrewRuntime<T: KeyValueStoreLike + Clone + 'static> {
     pub context: Arc<Mutex<MetashrewRuntimeContext<T>>>,
     pub engine: wasmtime::Engine,
     pub wasmstore: wasmtime::Store<State>,
@@ -114,6 +124,7 @@ impl<T: KeyValueStoreLike> MetashrewRuntime<T>
 where
     T: KeyValueStoreLike,
     T: Sync + Send,
+    T: Clone
 {
     pub fn load(indexer: PathBuf, store: T) -> Result<Self> {
         let engine = wasmtime::Engine::default();
@@ -144,10 +155,10 @@ where
         });
     }
 
-    pub fn view(&mut self, symbol: String, input: &Vec<u8>, height: u32) -> Result<Vec<u8>> {
+    pub fn view(&self, symbol: String, input: &Vec<u8>, height: u32) -> Result<Vec<u8>> {
         let mut linker = Linker::<State>::new(&self.engine);
         let mut wasmstore = Store::<State>::new(&self.engine, State::new());
-        let context = self.context.clone();
+        let context = Arc::<Mutex<MetashrewRuntimeContext<T>>>::new(Mutex::new(self.context.clone().lock().unwrap().clone()));
         {
           (context.lock().unwrap().height, context.lock().unwrap().block) = (height, input.clone());
         }
