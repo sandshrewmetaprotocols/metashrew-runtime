@@ -704,7 +704,6 @@ dependencies = [
  "rayon",
  "rlp",
  "serde",
- "serde_derive",
  "serde_json",
  "tempdir",
  "wasmtime",
