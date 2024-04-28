@@ -390,7 +390,13 @@ where
                 |mut caller: Caller<'_, State>, data_start: i32| {
                     let mem = caller.get_export("memory").unwrap().into_memory().unwrap();
                     let data = mem.data(&caller);
-                    let bytes = read_arraybuffer_as_vec(data, data_start);
+                    let bytes = match try_read_arraybuffer_as_vec(data, data_start) {
+                      Ok(v) => v,
+                      Err(_) => {
+                        caller.get_export("abort").unwrap().into_func().unwrap().call(&mut caller, &[], &mut []).unwrap();
+                        return;
+                      }
+                    };
                     println!("{}", std::str::from_utf8(bytes.as_slice()).unwrap());
                 },
             )
@@ -477,7 +483,13 @@ where
                     };
                     let mem = caller.get_export("memory").unwrap().into_memory().unwrap();
                     let data = mem.data(&caller);
-                    let encoded_vec = read_arraybuffer_as_vec(data, encoded);
+                    let encoded_vec = match try_read_arraybuffer_as_vec(data, encoded) {
+                      Ok(v) => v,
+                      Err(_) => {
+                        caller.get_export("abort").unwrap().into_func().unwrap().call(&mut caller, &[], &mut []).unwrap();
+                        return;
+                      }
+                    };
                     let mut batch = T::Batch::default();
                     let _ = Self::db_create_empty_update_list(&mut batch, height as u32);
                     let decoded: Vec<Vec<u8>> = rlp::decode_list(&encoded_vec);
