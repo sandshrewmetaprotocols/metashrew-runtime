@@ -1,7 +1,6 @@
 use anyhow::{Result, anyhow};
 use itertools::Itertools;
 use rlp;
-use rocksdb::WriteBatchWithTransaction;
 use rocksdb;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -24,7 +23,7 @@ pub trait KeyValueStoreLike {
         V: AsRef<[u8]>;
 }
 
-pub struct RocksDBBatch(pub WriteBatchWithTransaction<false>);
+pub struct RocksDBBatch(pub rocksdb::WriteBatch);
 
 impl BatchLike for RocksDBBatch {
     fn put<K: AsRef<[u8]>, V: AsRef<[u8]>>(&mut self, key: K, value: V) {
@@ -430,7 +429,7 @@ where
     }
     pub fn db_append(
         context: Arc<Mutex<MetashrewRuntimeContext<T>>>,
-        batch: &mut WriteBatchWithTransaction<false>,
+        batch: &mut rocksdb::WriteBatch,
         key: &Vec<u8>,
         value: &Vec<u8>,
     ) {
